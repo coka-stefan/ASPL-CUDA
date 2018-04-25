@@ -15,8 +15,8 @@
 #include <iostream>
 #include <fstream>
 
-#define max 12393
-
+// #define max 12393
+#define max 500
 /*
  * A class to read data from a csv file.
  */
@@ -47,7 +47,7 @@ std::vector <std::vector<std::string>> CSVReader::getData() {
         std::vector <std::string> vec;
         boost::algorithm::split(vec, line, boost::is_any_of(delimeter));
         dataList.push_back(vec);
-//         if(dataList.size() > 2000) break;
+        if(dataList.size() > max) break;
     }
     // Close the File
     file.close();
@@ -59,10 +59,10 @@ std::vector <std::vector<std::string>> CSVReader::getData() {
 // A utility function to find the vertex with minimum distance value, from
 // the set of vertices not yet included in shortest path tree
 __device__
-unsigned int minDistance(unsigned int dist[], bool sptSet[], int V) {
+unsigned short minDistance(unsigned short dist[], bool sptSet[], int V) {
     // Initialize min value
-    unsigned int min = INT_MAX, min_index;
-    for (int v = 0; v < V; v++)
+    unsigned short min = SHRT_MAX, min_index;
+    for (short v = 0; v < V; v++)
         if (sptSet[v] == false && dist[v] <= min)
             min = dist[v], min_index = v;
 
@@ -82,28 +82,37 @@ void printSolution(unsigned int dist[], int n, int src)
 // Funtion that implements Dijkstra's single source shortest path algorithm
 // for a graph represented using adjacency matrix representation
 __device__
-unsigned int *dijkstra(short *graph, int src, unsigned long long int *sum, int V) {
+void dijkstra(short *graph, int src, unsigned long long int *sum, int V) {
 
-    unsigned int *dist; // The output array.  dist[i] will hold the shortest
+    unsigned short *dist; // The output array.  dist[i] will hold the shortest
     // distance from src to i
 
-    dist = new unsigned int[V];
+    dist = new unsigned short[V];
 
+    if(threadIdx.x == 96 && blockIdx.x == 24) {
+        printf("dist[0] = %d\n", dist[0]);
+    }
+            
+            
     bool *sptSet;
     sptSet = new bool[V]; // sptSet[i] will true if vertex i is included in shortest
     // path tree or shortest distance from src to i is finalized
 
     // Initialize all distances as INFINITE and stpSet[] as false
-    for (int i = 0; i < V; i++)
+    for (short i = 0; i < V; i++)
     {
-        dist[i] = INT_MAX;
+        if(threadIdx.x == 96 && blockIdx.x == 24) {
+            printf("i100 = %d\n", i);
+            printf("dist[i] = %d\n", dist[i]);
+            }
+        dist[i] = SHRT_MAX;
         sptSet[i] = false;
     }
 
     // Distance of source vertex from itself is always 0
     dist[src] = 0;
     // Find shortest path for all vertices
-    for (int count = 0; count < V - 1; count++) {
+    for (short count = 0; count < V - 1; count++) {
 
         // Pick the minimum distance vertex from the set of vertices not
         // yet processed. u is always equal to src in first iteration.
@@ -118,7 +127,7 @@ unsigned int *dijkstra(short *graph, int src, unsigned long long int *sum, int V
         {          
             if (!sptSet[v] && 
                 graph[(u * (V-1)) + v] && 
-                dist[u] != INT_MAX &&
+                dist[u] != SHRT_MAX &&
                 dist[u] + graph[(u * (V-1)) + v] < dist[v])
                 
                 dist[v] = dist[u] + graph[(u * (V-1)) + v];
@@ -126,16 +135,14 @@ unsigned int *dijkstra(short *graph, int src, unsigned long long int *sum, int V
     }
     
     
-    for (int i = 0; i < V; i++)
+    for (short i = 0; i < V; i++)
     {
-        
-        if (dist[i] != INT_MAX)
+        if (dist[i] != SHRT_MAX)
             atomicAdd(sum, dist[i]);
 
     }
     // print the constructed distance array
 //      printSolution(dist, V, src);
-    return dist;
 }
 
 __global__
@@ -145,7 +152,7 @@ void allPaths(short *graph, unsigned long long int *sum, int V) {
          i < V; 
          i += blockDim.x * gridDim.x) {
          
-        if (threadIdx.x == 992 && blockIdx.x == 0) printf ("i = %d\n", i);
+//         if (threadIdx.x == 992 && blockIdx.x == 0) printf ("i = %d\n", i);
         dijkstra(graph, i, sum, V);
 
     }
@@ -214,7 +221,8 @@ int main() {
 
         start = std::clock();
         
-        allPaths <<< 16 * numSMs, 512 >>> (pGraph, cuda_sum, V);
+        allPaths <<< 32 * numSMs, 1024 >>> (pGraph, cuda_sum, V);
+//         allPaths <<<1,1>>>(pGraph, cuda_sum, V);
         
         cudaError_t err = cudaGetLastError();
         if (err != cudaSuccess) {
