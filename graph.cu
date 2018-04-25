@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <stdlib.h>
+#include <iostream>
+#include <fstream>
 
 #define max 12393
 
@@ -45,6 +47,7 @@ std::vector <std::vector<std::string>> CSVReader::getData() {
         std::vector <std::string> vec;
         boost::algorithm::split(vec, line, boost::is_any_of(delimeter));
         dataList.push_back(vec);
+//         if(dataList.size() > 2000) break;
     }
     // Close the File
     file.close();
@@ -55,12 +58,10 @@ std::vector <std::vector<std::string>> CSVReader::getData() {
 
 // A utility function to find the vertex with minimum distance value, from
 // the set of vertices not yet included in shortest path tree
-__host__ __device__
-
+__device__
 unsigned int minDistance(unsigned int dist[], bool sptSet[], int V) {
     // Initialize min value
     unsigned int min = INT_MAX, min_index;
-
     for (int v = 0; v < V; v++)
         if (sptSet[v] == false && dist[v] <= min)
             min = dist[v], min_index = v;
@@ -69,11 +70,11 @@ unsigned int minDistance(unsigned int dist[], bool sptSet[], int V) {
 }
 
 // A utility function to print the constructed distance array
-__host__ __device__
-void printSolution(unsigned int dist[], int n, int src, int V)
+__device__
+void printSolution(unsigned int dist[], int n, int src)
 {
    printf("Vertex   Distance from Source %d\n", src);
-   for (int i = 0; i < V; i++)
+   for (int i = 0; i < n; i++)
       if(dist[i]!=INT_MAX)
        printf("%d \t\t %d\n", i, dist[i]);
 }
@@ -81,7 +82,8 @@ void printSolution(unsigned int dist[], int n, int src, int V)
 // Funtion that implements Dijkstra's single source shortest path algorithm
 // for a graph represented using adjacency matrix representation
 __device__
-unsigned int *dijkstra(short **graph, int src, unsigned long long int *sum, int V) {
+unsigned int *dijkstra(short *graph, int src, unsigned long long int *sum, int V) {
+
     unsigned int *dist; // The output array.  dist[i] will hold the shortest
     // distance from src to i
 
@@ -100,26 +102,29 @@ unsigned int *dijkstra(short **graph, int src, unsigned long long int *sum, int 
 
     // Distance of source vertex from itself is always 0
     dist[src] = 0;
-
     // Find shortest path for all vertices
     for (int count = 0; count < V - 1; count++) {
+
         // Pick the minimum distance vertex from the set of vertices not
         // yet processed. u is always equal to src in first iteration.
         unsigned int u = minDistance(dist, sptSet, V);
 
+        
         // Mark the picked vertex as processed
         sptSet[u] = true;
 
         // Update dist value of the adjacent vertices of the picked vertex.
         for (int v = 0; v < V; v++)
-
-            // Update dist[v] only if is not in sptSet, there is an edge from
-            // u to v, and total weight of path from src to  v through u is
-            // smaller than current value of dist[v]
-            if (!sptSet[v] && graph[u][v] && dist[u] != INT_MAX
-                && dist[u] + graph[u][v] < dist[v])
-                dist[v] = dist[u] + graph[u][v];
+        {          
+            if (!sptSet[v] && 
+                graph[(u * (V-1)) + v] && 
+                dist[u] != INT_MAX &&
+                dist[u] + graph[(u * (V-1)) + v] < dist[v])
+                
+                dist[v] = dist[u] + graph[(u * (V-1)) + v];
+        }
     }
+    
     
     for (int i = 0; i < V; i++)
     {
@@ -134,25 +139,27 @@ unsigned int *dijkstra(short **graph, int src, unsigned long long int *sum, int 
 }
 
 __global__
-void allPaths(short **graph, unsigned long long int *sum, int V) {
+void allPaths(short *graph, unsigned long long int *sum, int V) {
 
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; 
          i < V; 
-         i += (blockDim.x * gridDim.x)) {
+         i += blockDim.x * gridDim.x) {
+         
+        if (threadIdx.x == 992 && blockIdx.x == 0) printf ("i = %d\n", i);
         dijkstra(graph, i, sum, V);
+
     }
 }
 
 // driver program to test above function
 int main() {
 
+    
+    printf("Starting...\n");
     // Number of nodes is initially max, while reading in the main matrix
     int V = max;
-    short **graph;
-    graph = new short *[V];
-    for (int i = 0; i < V; i++) {
-        graph[i] = new short[V];
-    }
+    short *graph;
+    graph = new short [V*V];
 
     {
         // Creating an object of CSVWriter
@@ -164,67 +171,87 @@ int main() {
         for (unsigned i = 0; i < dataList.size(); ++i) {
             for (unsigned j = 0; j < dataList[i].size(); ++j) {
                 if(i<V && j<V)
-                graph[i][j] = atoi(dataList[i][j].c_str());
+                graph[V * i + j] = atoi(dataList[i][j].c_str());
             }
         }
     }
+    
 
-    for(int i = 10; i < max; i *= 10) {
+    int results[3][V];
+    
+    std::cout << "Parallel exec starting now..." << std::endl;
 
-        // Change apparent size of matrix
-        V = i;
-
-        short **pGraph;
+//     for(int i = 500; i < max; i+=500) {
+    
+        int numSMs;
+        cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
+       
+        short *pGraph;
 
         cudaMalloc((void **) &pGraph, (V * V) * sizeof(short));
         cudaMemcpy(pGraph, graph, (V * V) * sizeof(short), cudaMemcpyHostToDevice);
-        
+
         unsigned long long int sum = 0;
         unsigned long long int *cuda_sum;
-        
-        cudaMalloc((void**)&cuda_sum, sizeof(unsigned long long int));
-        cudaMemcpy(cuda_sum, &sum, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
-    
-        // cudaMalloc((void**)&pDist, (V*V)*sizeof(int));
-        // cudaMemcpy(pDist, graph, (V*V)*sizeof(int), cudaMemcpyHostToDevice);
-
-        int numSMs;
-        cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
 
         // std::cout << numSMs;
+    
+        sum = 0;
+        cudaMalloc((void**)&cuda_sum, sizeof(unsigned long long int));
+        cudaMemcpy(cuda_sum, &sum, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-        dim3 threadsPerBlock(V, V);
+
+// Change apparent size of matrix
+//         V = i;
+
+        int *pV;
+        cudaMalloc((void**)&pV, sizeof(int));
+        cudaError_t s = cudaMemcpy(pV, &V, sizeof(int), cudaMemcpyHostToDevice);
+        
+        std::cout << "Number of nodes = " << V << std::endl;
+
         std::clock_t start;
 
         start = std::clock();
-        std::cout << "Parallel exec starting now:" << std::endl;
-    
-        std::cout << "Number of nodes = " << V << std::endl;
-
-        allPaths <<< 32 * numSMs, 512 >>> (pGraph, cuda_sum, V);
+        
+        allPaths <<< 16 * numSMs, 512 >>> (pGraph, cuda_sum, V);
         
         cudaError_t err = cudaGetLastError();
         if (err != cudaSuccess) {
-            printf("Error: %s\n", cudaGetErrorString(err));
-            return -1;
+            printf("Error %d: %s\n", err, cudaGetErrorString(err));
+//             break;
         }
+        
+        cudaMemcpy(&sum, cuda_sum, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 
-        std::cout<<err;
-
+        
+        std::cout << "\nSum = " << sum << std::endl;
+        double ms = (std::clock() - start) / (double) (CLOCKS_PER_SEC / 1000);
+        std::cout << "Time: " << ms << " ms" << std::endl;
+        cudaDeviceSynchronize();
+        
+        cudaFree(cuda_sum);
+        cudaFree(pV);
+        
+//         results[0][i] = i;
+//         results[1][i] = ms;
+//         results[2][i] = sum;
+        
         cudaDeviceSynchronize();
         
         cudaFree(pGraph);
 
-        cudaMemcpy(&sum, cuda_sum, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
-        cudaFree(cuda_sum);
-        
-        std::cout << "\nSum = " << sum << std::endl;
-        std::cout << "Time: " << (std::clock() - start) / (double) (CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+//     }
 
-    }
-
+//     std::ofstream myfile;
+//     myfile.open ("results.csv");
+//     myfile << "nodes,time,sum\n";
     
-//    std::cout << "sync exec now:" << std::endl;
-    //allSyncPaths(graph);
+//     for (int i = 0; i < max; i+=500) {
+//         myfile << results[0][i] << ',' << results[1][i] << ',' << results [2][i] << '\n';
+//     }
+//     myfile.close();
+    
+    
     return 0;
 }
