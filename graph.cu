@@ -34,7 +34,7 @@ static void CheckCudaErrorAux(const char *, unsigned, const char *,
 #define CUDA_CHECK_RETURN(value) CheckCudaErrorAux(__FILE__,__LINE__, #value, value)
 
 #define max 12393
-
+// #define max 5000
 
 struct distStruct {
 	unsigned short *dist;
@@ -72,7 +72,7 @@ std::vector<std::vector<std::string>> CSVReader::getData() {
 		std::vector<std::string> vec;
 		boost::algorithm::split(vec, line, boost::is_any_of(delimeter));
 		dataList.push_back(vec);
-//         if(dataList.size() > 2000) break;
+        if(dataList.size() > max) break;
 	}
 	// Close the File
 	file.close();
@@ -106,15 +106,15 @@ void printSolution(unsigned int dist[], int n, int src) {
 // for a graph represented using adjacency matrix representation
 __device__
 void dijkstra(short *graph, int src, unsigned long long int *sum,
-		int V, unsigned short *dist) {
+		int V, unsigned short *dist, bool *sptSet) {
 
 	// unsigned int *dist; // The output array.  dist[i] will hold the shortest
 	// // distance from src to i
 
 	// dist = new unsigned int[V];
 
-	bool *sptSet;
-	sptSet = new bool[V]; // sptSet[i] will true if vertex i is included in shortest
+	// bool *sptSet;
+	// sptSet = new bool[V]; // sptSet[i] will true if vertex i is included in shortest
 	// path tree or shortest distance from src to i is finalized
 
 	// Initialize all distances as INFINITE and stpSet[] as false
@@ -148,9 +148,10 @@ void dijkstra(short *graph, int src, unsigned long long int *sum,
 
 	for (int i = 0; i < V; i++) {
 
-		if (dist[i] != SHRT_MAX)
+		if (dist[i] != SHRT_MAX && dist[i] != 0) {
+			// printf("sum add = %d + %d\n", *sum, dist[i]);
 			atomicAdd(sum, dist[i]);
-
+		}
 	}
 	// print the constructed distance array
 //      printSolution(dist, V, src);
@@ -158,15 +159,17 @@ void dijkstra(short *graph, int src, unsigned long long int *sum,
 }
 
 __global__
-void allPaths(short *graph, unsigned long long int *sum, int V, distStruct *dists) {
+void allPaths(short *graph, unsigned long long int *sum, int V, unsigned short *dists, bool* sptSets) {
+
+	// extern __shared__ unsigned short sharedMem[];
+	// unsigned short *dist = &sharedMem[threadIdx.x * V];
+	unsigned short *dist = &dists[(blockIdx.x * blockDim.x + threadIdx.x) * V];
+	bool *sptSet = &sptSets[(blockIdx.x * blockDim.x + threadIdx.x) * V];
 
 	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < V;
 			i += blockDim.x * gridDim.x) {
 
-		// if (threadIdx.x == 992 && blockIdx.x == 0)
-		// 	printf("i = %d\n", i);
-		unsigned short *dist = dists[i].dist;
-		dijkstra(graph, i, sum, V, dist);
+		dijkstra(graph, i, sum, V, dist, sptSet);
 
 	}
 }
@@ -195,11 +198,11 @@ int main() {
 		}
 	}
 
-	int results[3][V];
+	// int results[3][V];
 
-	std::cout << "Parallel exec starting now..." << std::endl;
+	std::cout << "Exec starting now..." << std::endl;
 
-//     for(int i = 500; i < max; i+=500) {
+    // for(int i = 50; i < max; i+=10) {
 
 	int numSMs;
 	cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
@@ -219,34 +222,49 @@ int main() {
 	CUDA_CHECK_RETURN(cudaMemcpy(cuda_sum, &sum, sizeof(unsigned long long int),
 			cudaMemcpyHostToDevice));
 
-// Change apparent size of matrix
-//         V = i;
+	// Change apparent size of matrix
+	// V = i;
 
 	int *pV;
 	CUDA_CHECK_RETURN(cudaMalloc((void**) &pV, sizeof(int)));
 	CUDA_CHECK_RETURN(cudaMemcpy(pV, &V, sizeof(int), cudaMemcpyHostToDevice));
 
 
-	int blockDim = 16;
-	int gridDim = 1024;
+	int gridDim = 32 * numSMs;
+	int blockDim = 1024;
 
-	distStruct *hostDist; 
-	hostDist = new distStruct[blockDim * gridDim];
-	distStruct *deviceDist;
+	// gridDim = 1;
+	// blockDim = 1;
 
-	for(int k = 0; k < blockDim * gridDim; k++) {
-		hostDist[k].dist = new unsigned short[V];
+	unsigned int sharedMemSize = V * blockDim * sizeof(unsigned short);
+	unsigned int globalArraySize = sharedMemSize * gridDim;
+	unsigned short *deviceDist;
+	bool *deviceSptSet;
+	
+	std::cout << "Global mem size = " << globalArraySize << "\n";
 
-		unsigned short *d;
+	CUDA_CHECK_RETURN(cudaMalloc((void**) &deviceDist, globalArraySize));
+	CUDA_CHECK_RETURN(cudaMalloc((void**) &deviceSptSet, globalArraySize));
 
-		// size_t * free, *total;
-		// cuMemGetInfo(free, total);
-		// std::cout << "mem avail " << *free << "\n";
-		CUDA_CHECK_RETURN(cudaMalloc((void**) &d, V * sizeof(unsigned short)));
-		hostDist[k].dist = d;
-	}
+	// std::cout << "Shared mem size = " << sharedMemSize << "\n";
 
-	CUDA_CHECK_RETURN(cudaMalloc((void**) &deviceDist, blockDim * gridDim * sizeof(distStruct)));
+	// distStruct *hostDist; 
+	// hostDist = new distStruct[blockDim * gridDim];
+	// distStruct *deviceDist;
+
+	// for(int k = 0; k < blockDim * gridDim; k++) {
+	// 	hostDist[k].dist = new unsigned short[V];
+
+	// 	unsigned short *d;
+
+	// 	// size_t * free, *total;
+	// 	// cuMemGetInfo(free, total);
+	// 	// std::cout << "mem avail " << *free << "\n";
+	// 	CUDA_CHECK_RETURN(cudaMalloc((void**) &d, V * sizeof(unsigned short)));
+	// 	hostDist[k].dist = d;
+	// }
+
+	// CUDA_CHECK_RETURN(cudaMalloc((void**) &deviceDist, blockDim * gridDim * sizeof(distStruct)));
 	// CUDA_CHECK_RETURN(cudaMemcpy(deviceDist, hostDist, (V * sizeof(distStruct)), cudaMemcpyHostToDevice));
 
 	std::cout << "Number of nodes = " << V << std::endl;
@@ -255,12 +273,13 @@ int main() {
 
 	start = std::clock();
 
-	allPaths<<<blockDim, gridDim>>>(pGraph, cuda_sum, V, deviceDist);
+	
+	allPaths<<<gridDim, blockDim/*, sharedMemSize*/>>>(pGraph, cuda_sum, V, deviceDist, deviceSptSet);
 
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) {
 		printf("Error %d: %s\n", err, cudaGetErrorString(err));
-//             break;
+			// break;
 	}
 
 	cudaMemcpy(&sum, cuda_sum, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
@@ -273,26 +292,24 @@ int main() {
 	cudaFree(cuda_sum);
 	cudaFree(pV);
 
-//         results[0][i] = i;
-//         results[1][i] = ms;
-//         results[2][i] = sum;
+	// results[0][i] = i;
+	// results[1][i] = ms;
+	// results[2][i] = sum;
 
 	cudaFree(pGraph);
 	
 	cudaDeviceSynchronize();
 
-	
+    // }
 
-//     }
+    // std::ofstream myfile;
+    // myfile.open ("results.csv");
+    // myfile << "nodes,time,sum\n";
 
-//     std::ofstream myfile;
-//     myfile.open ("results.csv");
-//     myfile << "nodes,time,sum\n";
-
-//     for (int i = 0; i < max; i+=500) {
-//         myfile << results[0][i] << ',' << results[1][i] << ',' << results [2][i] << '\n';
-//     }
-//     myfile.close();
+    // for (int i = 0; i < max; i+=500) {
+    //     myfile << results[0][i] << ',' << results[1][i] << ',' << results [2][i] << '\n';
+    // }
+    // myfile.close();
 
 	return 0;
 }
@@ -309,5 +326,4 @@ static void CheckCudaErrorAux(const char *file, unsigned line,
 			<< err << ") at " << file << ":" << line << std::endl;
 	exit(1);
 }
-
 
